@@ -1,0 +1,5 @@
+A cél egy olyan ügyeletbeosztó alkalmazás elkészítése Kotlin nyelven, amely megkönnyíti a havi munkarend és ügyeleti beosztások tervezését egy csapat vagy osztály számára.
+
+A program nyilvántartja a dolgozók adatait, az elérhetőségüket, az előre bejelentett szabadságokat vagy kieső napokat, valamint a havi maximálisan vállalható ügyeletek számát. Lehetőség van továbbá az egyes dolgozóknak megadni, hogy melyik napokat részesítik előnyben. A megadott szabályok – például a pihenőidők betartása (ne lehessen egymást követő napokon ügyelni) és az arányos teherelosztás – figyelembevételével az alkalmazás automatikusan elkészíti a havi tervezetet.
+
+A felhasználónak egy egyszerű grafikus felületen lehetősége van a generált beosztás áttekintésére, az esetleges manuális módosítások vagy cserék elvégzésére, valamint a végleges ütemezés kényelmes fájlba (például CSV/JSON formátumba) történő exportálására a könnyebb megosztás és táblázatkezelőben (Excel) való megnyitás érdekében. 
