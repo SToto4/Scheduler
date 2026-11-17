@@ -4,6 +4,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import kotlinx.datetime.LocalDate
 import org.stoto.scheduler.domain.ScheduleEditor
+import org.stoto.scheduler.domain.ScheduleResult
 import org.stoto.scheduler.domain.ScheduleStatistics
 import org.stoto.scheduler.domain.ShiftScheduler
 import org.stoto.scheduler.model.Schedule
@@ -67,9 +68,23 @@ class SchedulerViewModel(
 
     // --- Dolgozók CRUD ---
 
+    /**
+     * Igaz, ha már létezik a megadott nevű dolgozó (kis-/nagybetű és körülvevő szóköz
+     * figyelmen kívül hagyásával). [ignoreWorkerId] a szerkesztett dolgozó kihagyására.
+     */
+    fun isNameTaken(name: String, ignoreWorkerId: String? = null): Boolean {
+        val normalized = name.trim().lowercase()
+        if (normalized.isEmpty()) return false
+        return _workers.value.any { it.id != ignoreWorkerId && it.name.trim().lowercase() == normalized }
+    }
+
     fun addWorker(worker: Worker) {
         if (_workers.value.any { it.id == worker.id }) {
             _errorMessage.value = "Már van dolgozó ezzel az azonosítóval: ${worker.id}"
+            return
+        }
+        if (isNameTaken(worker.name)) {
+            _errorMessage.value = "Már létezik ilyen nevű dolgozó!"
             return
         }
         _workers.value = _workers.value + worker
@@ -80,6 +95,10 @@ class SchedulerViewModel(
         val index = _workers.value.indexOfFirst { it.id == worker.id }
         if (index < 0) {
             _errorMessage.value = "Nem található a frissítendő dolgozó: ${worker.id}"
+            return
+        }
+        if (isNameTaken(worker.name, ignoreWorkerId = worker.id)) {
+            _errorMessage.value = "Már létezik ilyen nevű dolgozó!"
             return
         }
         _workers.value = _workers.value.toMutableList().also { it[index] = worker }
@@ -144,23 +163,19 @@ class SchedulerViewModel(
         _isGenerating.value = true
         clearMessages()
         try {
-            val result = scheduler.generate(
+            val result = scheduler.generateSchedule(
                 year = _year.value,
                 month = _month.value,
                 workers = _workers.value,
                 previousMonthLastWorkerId = previousMonthLastWorkerId
             )
             when (result) {
-                is ShiftScheduler.GenerationResult.Success -> {
+                is ScheduleResult.Success -> {
                     _schedule.value = result.schedule
                     recomputeViolations()
-                    _statusMessage.value = if (result.appliedOvertime > 0) {
-                        "Beosztás elkészült ${result.appliedOvertime} túlóra engedélyezésével."
-                    } else {
-                        "Beosztás sikeresen elkészült."
-                    }
+                    _statusMessage.value = "Beosztás sikeresen elkészült."
                 }
-                is ShiftScheduler.GenerationResult.Failure -> {
+                is ScheduleResult.Failure -> {
                     _errorMessage.value = result.reason
                 }
             }

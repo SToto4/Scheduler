@@ -4,115 +4,122 @@ import kotlinx.datetime.DatePeriod
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.minus
+import kotlinx.datetime.plus
 import org.stoto.scheduler.model.Schedule
 import org.stoto.scheduler.model.Shift
 import org.stoto.scheduler.model.Worker
 
 /**
+ * A beosztás-generálás zárt eredménystruktúrája.
+ * A [SchedulerViewModel] pontosan a [Failure.reason] üzenetét jeleníti meg a Snackbarban.
+ */
+sealed interface ScheduleResult {
+    data class Success(val schedule: Schedule) : ScheduleResult
+    data class Failure(val reason: String) : ScheduleResult
+}
+
+/**
  * Havi ügyeleti beosztást generáló motor.
  *
- * A keresés visszalépéses (backtracking) algoritmussal dolgozik, a kemény szabályok
- * (szabadság, havi maximum, egymást követő napok tiltása – a hónapfordulót is beleértve)
- * mentén szűri a jelölteket, a puha feltételeket (arányos teher, hétvége-elosztás,
- * preferált napok) pedig pontozással veszi figyelembe.
+ * A keresés visszalépéses (backtracking) algoritmussal dolgozik MRV (Minimum Remaining
+ * Values) heurisztikával: mindig azt a még ki nem osztott napot választja következőnek,
+ * amelyre a legkevesebb szabályos jelölt van. A kemény szabályok (szabadság, havi maximum,
+ * egymást követő napok tiltása – a hónapfordulót is beleértve) szűrik a jelölteket, a puha
+ * feltételeket (arányos teher, hétvége-elosztás, preferált napok) pontozás veszi figyelembe.
  *
  * Ha a szigorú havi maximummal nincs megoldás, iteratívan lazítja a keretet
- * (lásd [maxAllowedOvertime]), így végszükség esetén is ad eredményt.
+ * (lásd [maxOvertimeRelaxation]), így végszükség esetén is ad eredményt.
  */
 class ShiftScheduler(
     /** A backtracking által bejárható csomópontok (próbálkozások) felső korlátja. */
-    private val maxBacktrackSteps: Int = 2_000_000,
+    private val maxBacktrackSteps: Int = 100_000,
     /** A havi maximum túllépésének felső határa a relaxáció során. */
     private val maxOvertimeRelaxation: Int = 10
 ) {
 
-    /** A generálás kimenetele – siker esetén a beosztás, egyébként a hiba oka. */
-    sealed interface GenerationResult {
-        data class Success(
-            val schedule: Schedule,
-            /** Hány egységnyi túlórát kellett engedélyezni a megoldáshoz (0 = szigorú keret). */
-            val appliedOvertime: Int
-        ) : GenerationResult
-
-        data class Failure(val reason: String) : GenerationResult
-    }
-
     /**
-     * Legenerálja a havi beosztást.
+     * Legenerálja a havi beosztást, és zárt [ScheduleResult]-ot ad vissza.
      *
      * @param previousMonthLastWorkerId Opcionális: az előző hónap utolsó napján ügyelő dolgozó.
-     * @return [Schedule] ha sikerült minden napot lefedni, különben `null`.
-     *         Részletesebb kimenetért lásd [generate].
      */
     fun generateSchedule(
         year: Int,
         month: Int,
         workers: List<Worker>,
         previousMonthLastWorkerId: String? = null
-    ): Schedule? = (generate(year, month, workers, previousMonthLastWorkerId)
-        as? GenerationResult.Success)?.schedule
-
-    /**
-     * Mint a [generateSchedule], de strukturált eredményt ad vissza (siker + túlóra, vagy hiba).
-     */
-    fun generate(
-        year: Int,
-        month: Int,
-        workers: List<Worker>,
-        previousMonthLastWorkerId: String? = null
-    ): GenerationResult {
-        // --- Bemenet validálása (szélsőértékek) ---
+    ): ScheduleResult {
+        // --- Bemenet validálása ---
         if (month !in 1..12) {
-            return GenerationResult.Failure("Érvénytelen hónap: $month (1–12 várt).")
+            return ScheduleResult.Failure("Érvénytelen hónap: $month (1–12 várt).")
         }
         if (year !in 1..9999) {
-            return GenerationResult.Failure("Érvénytelen év: $year.")
+            return ScheduleResult.Failure("Érvénytelen év: $year.")
+        }
+        if (workers.isEmpty()) {
+            return ScheduleResult.Failure("Nincs felvett dolgozó.")
+        }
+
+        val duplicateIds = workers.groupingBy { it.id }.eachCount().filterValues { it > 1 }.keys
+        if (duplicateIds.isNotEmpty()) {
+            return ScheduleResult.Failure("Ismétlődő dolgozó-azonosító(k): ${duplicateIds.joinToString()}")
         }
 
         val days = getDaysInMonth(year, month)
+        val dayCount = days.size
 
-        if (workers.isEmpty()) {
-            return GenerationResult.Failure("Nincs megadva egyetlen dolgozó sem.")
-        }
-        // Egyedi azonosítók – duplikátum az egész logikát elrontaná.
-        val duplicateIds = workers.groupingBy { it.id }.eachCount().filterValues { it > 1 }.keys
-        if (duplicateIds.isNotEmpty()) {
-            return GenerationResult.Failure("Ismétlődő dolgozó-azonosító(k): ${duplicateIds.joinToString()}")
+        // --- Előzetes kapacitásvizsgálat ---
+        // A legnagyobb engedhető kapacitás a teljes relaxáció mellett.
+        val maxCapacity = workers.sumOf { it.maxShifts } + workers.size * maxOvertimeRelaxation
+        if (maxCapacity < dayCount) {
+            val strictCapacity = workers.sumOf { it.maxShifts }
+            return ScheduleResult.Failure(
+                "Nincs elég kapacitás: a hónap $dayCount napos, de a dolgozók összesen " +
+                    "legfeljebb $strictCapacity műszakot tudnak vállalni."
+            )
         }
 
-        // --- Iteratív relaxáció: először szigorú kerettel, majd fokozatosan túlórát engedve ---
+        // --- Iteratív relaxáció: szigorú kerettel indul, majd fokozatosan túlórát enged ---
+        var reachedStepLimit = false
         for (overtime in 0..maxOvertimeRelaxation) {
-            val assigned = mutableListOf<Shift>()
+            // Ezen a relaxációs szinten egyáltalán elég-e az összkapacitás?
+            val capacityAtLevel = workers.sumOf { it.maxShifts + overtime }
+            if (capacityAtLevel < dayCount) continue
+
+            val assignment = HashMap<LocalDate, String>(dayCount * 2)
+            val counts = HashMap<String, Int>()
             val steps = IntRef()
+
             val outcome = backtrack(
-                dayIndex = 0,
-                days = days,
+                remaining = days.toMutableList(),
+                assignment = assignment,
+                counts = counts,
                 workers = workers,
-                currentShifts = assigned,
+                allDays = days,
                 previousMonthLastWorkerId = previousMonthLastWorkerId,
                 allowedOvertime = overtime,
                 steps = steps
             )
             when (outcome) {
-                SearchOutcome.FOUND ->
-                    return GenerationResult.Success(
-                        Schedule(year = year, month = month, shifts = assigned.sortedBy { it.date }),
-                        appliedOvertime = overtime
-                    )
-                SearchOutcome.STEP_LIMIT ->
-                    return GenerationResult.Failure(
-                        "A keresés elérte a lépéskorlátot (${maxBacktrackSteps}). " +
-                            "Próbáld csökkenteni a megkötéseket vagy növelni a dolgozók számát."
-                    )
+                SearchOutcome.FOUND -> {
+                    val shifts = days.map { date -> Shift(date, assignment[date]) }
+                    return ScheduleResult.Success(Schedule(year = year, month = month, shifts = shifts))
+                }
+                SearchOutcome.STEP_LIMIT -> reachedStepLimit = true
                 SearchOutcome.EXHAUSTED -> {
-                    // Ezzel a túlóra-kerettel nincs megoldás; próbáljuk a következő szinttel.
+                    // Nincs megoldás ezzel a kerettel; próbáljuk a következő szinttel.
                 }
             }
         }
 
-        return GenerationResult.Failure(
-            "Nem található érvényes beosztás még ${maxOvertimeRelaxation} túlóra engedélyezésével sem. " +
-                "Túl sok a kieső nap, vagy túl alacsony a havi maximum."
+        // A kapacitás elvileg elég, de a szabadságok / pihenőidő miatt nincs megoldás.
+        return ScheduleResult.Failure(
+            if (reachedStepLimit) {
+                "A megadott szabadságok és pihenőidő-szabályok mellett nem sikerült ütközésmentes " +
+                    "beosztást találni a megengedett lépésszámon (${maxBacktrackSteps}) belül."
+            } else {
+                "A megadott szabadságok és pihenőidő-szabályok mellett nem állítható össze " +
+                    "ütközésmentes beosztás."
+            }
         )
     }
 
@@ -121,112 +128,137 @@ class ShiftScheduler(
     private class IntRef(var value: Int = 0)
 
     /**
-     * Rekurzív visszalépéses keresés lépéskorláttal és túlóra-kerettel.
+     * Rekurzív visszalépéses keresés MRV heurisztikával és lépéskorláttal.
+     *
+     * @param remaining a még ki nem osztott napok (módosítható munkalista).
+     * @param assignment nap -> dolgozó azonosító (az eddigi döntések).
+     * @param counts dolgozó -> eddig kiosztott műszakszám (gyors kerethatár-ellenőrzéshez).
      */
     private fun backtrack(
-        dayIndex: Int,
-        days: List<LocalDate>,
+        remaining: MutableList<LocalDate>,
+        assignment: HashMap<LocalDate, String>,
+        counts: HashMap<String, Int>,
         workers: List<Worker>,
-        currentShifts: MutableList<Shift>,
+        allDays: List<LocalDate>,
         previousMonthLastWorkerId: String?,
         allowedOvertime: Int,
         steps: IntRef
     ): SearchOutcome {
-        // Alapeset: minden napot beosztottunk.
-        if (dayIndex >= days.size) return SearchOutcome.FOUND
+        if (remaining.isEmpty()) return SearchOutcome.FOUND
 
         if (steps.value >= maxBacktrackSteps) return SearchOutcome.STEP_LIMIT
         steps.value++
 
-        val currentDate = days[dayIndex]
-        val eligibleWorkers = getEligibleWorkers(
-            date = currentDate,
-            workers = workers,
-            currentShifts = currentShifts,
-            previousMonthLastWorkerId = previousMonthLastWorkerId,
-            allowedOvertime = allowedOvertime
-        )
+        // --- MRV: a legkevesebb szabályos jelölttel rendelkező nap kiválasztása ---
+        var bestIndex = -1
+        var bestCandidates: List<Worker>? = null
+        var bestSize = Int.MAX_VALUE
+        for (i in remaining.indices) {
+            val candidates = eligibleWorkers(
+                date = remaining[i],
+                workers = workers,
+                assignment = assignment,
+                counts = counts,
+                firstDay = allDays.first(),
+                previousMonthLastWorkerId = previousMonthLastWorkerId,
+                allowedOvertime = allowedOvertime
+            )
+            if (candidates.size < bestSize) {
+                bestSize = candidates.size
+                bestIndex = i
+                bestCandidates = candidates
+                if (bestSize == 0) break // Azonnali zsákutca – nem érdemes tovább keresni.
+            }
+        }
 
-        // Jelöltek rendezése pontszám szerint (legjobb elöl), holtverseny feloldása véletlennel.
-        val rankedCandidates = eligibleWorkers
+        val candidates = bestCandidates ?: emptyList()
+        if (candidates.isEmpty()) return SearchOutcome.EXHAUSTED
+
+        val date = remaining[bestIndex]
+        // A kiválasztott napot kivesszük a maradékból (indexes csere az utolsóval a gyors törléshez).
+        val lastIdx = remaining.lastIndex
+        remaining[bestIndex] = remaining[lastIdx]
+        remaining.removeAt(lastIdx)
+
+        val ranked = candidates
             .shuffled()
-            .sortedBy { worker -> calculatePenaltyScore(worker, currentDate, currentShifts) }
+            .sortedBy { worker -> penaltyScore(worker, date, assignment) }
 
-        for (candidate in rankedCandidates) {
-            currentShifts.add(Shift(date = currentDate, assignedWorkerId = candidate.id))
+        for (candidate in ranked) {
+            assignment[date] = candidate.id
+            counts[candidate.id] = (counts[candidate.id] ?: 0) + 1
 
             val result = backtrack(
-                dayIndex + 1, days, workers, currentShifts,
+                remaining, assignment, counts, workers, allDays,
                 previousMonthLastWorkerId, allowedOvertime, steps
             )
             if (result == SearchOutcome.FOUND) return SearchOutcome.FOUND
             if (result == SearchOutcome.STEP_LIMIT) {
-                currentShifts.removeAt(currentShifts.lastIndex)
+                // A lépéskorlát felfelé propagál és a keresés leáll; a maradék lista pontos
+                // helyreállítása felesleges, mert azt már senki sem olvassa.
                 return SearchOutcome.STEP_LIMIT
             }
 
-            // Visszalépés: zsákutca a jövőbeli napokon.
-            currentShifts.removeAt(currentShifts.lastIndex)
+            // Visszalépés.
+            counts[candidate.id] = (counts[candidate.id] ?: 1) - 1
+            assignment.remove(date)
         }
 
+        // A napot visszatesszük a maradékba (az eredeti indexre, hogy a hívó állapota konzisztens maradjon).
+        remaining.add(date)
         return SearchOutcome.EXHAUSTED
     }
 
     /**
-     * A KEMÉNY SZABÁLYOK alapján beosztható dolgozók listája az adott napra.
+     * A KEMÉNY SZABÁLYOK alapján az adott napra beosztható dolgozók.
+     * Mivel a napok nem sorrendben kerülnek kiosztásra, az előző ÉS a következő nap
+     * ügyeletesét is nézni kell (pihenőidő), a hónapforduló kezelésével.
      */
-    private fun getEligibleWorkers(
+    private fun eligibleWorkers(
         date: LocalDate,
         workers: List<Worker>,
-        currentShifts: List<Shift>,
+        assignment: Map<LocalDate, String>,
+        counts: Map<String, Int>,
+        firstDay: LocalDate,
         previousMonthLastWorkerId: String?,
         allowedOvertime: Int
     ): List<Worker> {
         val previousDay = date.minus(DatePeriod(days = 1))
+        val nextDay = date.plus(DatePeriod(days = 1))
 
-        // Előző nap ügyeletese (a hónap 1. napján az előző hónapból átadott érték).
-        val previousWorkerId = if (date.dayOfMonth == 1) {
-            previousMonthLastWorkerId
-        } else {
-            currentShifts.find { it.date == previousDay }?.assignedWorkerId
-        }
+        val previousWorkerId = assignment[previousDay]
+            ?: if (date == firstDay) previousMonthLastWorkerId else null
+        val nextWorkerId = assignment[nextDay]
 
         return workers.filter { worker ->
             val isAvailable = date !in worker.unavailableDates
-
-            val currentCount = currentShifts.count { it.assignedWorkerId == worker.id }
-            val hasRemainingShifts = currentCount < worker.maxShifts + allowedOvertime
-
-            val workedYesterday = worker.id == previousWorkerId
-
-            isAvailable && hasRemainingShifts && !workedYesterday
+            val withinCap = (counts[worker.id] ?: 0) < worker.maxShifts + allowedOvertime
+            val restOk = worker.id != previousWorkerId && worker.id != nextWorkerId
+            isAvailable && withinCap && restOk
         }
     }
 
     /**
      * Pontszámítás a jelöltek rendezéséhez: minél kisebb, annál alkalmasabb.
      */
-    private fun calculatePenaltyScore(
+    private fun penaltyScore(
         worker: Worker,
         date: LocalDate,
-        currentShifts: List<Shift>
+        assignment: Map<LocalDate, String>
     ): Int {
         var score = 0
 
-        // 1. Teher-egyensúly: eddigi műszakok száma.
-        val totalShiftsSoFar = currentShifts.count { it.assignedWorkerId == worker.id }
+        // 1. Teher-egyensúly: eddigi összes műszak.
+        val totalShiftsSoFar = assignment.count { it.value == worker.id }
         score += totalShiftsSoFar * 10
 
         // 2. Preferált nap: erős kedvezmény.
-        if (date in worker.preferredDates) {
-            score -= 25
-        }
+        if (date in worker.preferredDates) score -= 25
 
         // 3. Hétvégi igazságosság.
-        val isTargetWeekend = date.dayOfWeek == DayOfWeek.SATURDAY || date.dayOfWeek == DayOfWeek.SUNDAY
-        if (isTargetWeekend) {
-            val weekendShiftsSoFar = currentShifts.count { shift ->
-                shift.assignedWorkerId == worker.id && shift.isWeekend
+        if (date.dayOfWeek == DayOfWeek.SATURDAY || date.dayOfWeek == DayOfWeek.SUNDAY) {
+            val weekendShiftsSoFar = assignment.count { (d, id) ->
+                id == worker.id && (d.dayOfWeek == DayOfWeek.SATURDAY || d.dayOfWeek == DayOfWeek.SUNDAY)
             }
             score += weekendShiftsSoFar * 15
         }
@@ -234,9 +266,7 @@ class ShiftScheduler(
         return score
     }
 
-    /**
-     * Segédfüggvény: a megadott hónap összes napja [LocalDate] listaként.
-     */
+    /** Segédfüggvény: a megadott hónap összes napja [LocalDate] listaként. */
     private fun getDaysInMonth(year: Int, month: Int): List<LocalDate> {
         val nextYear = if (month == 12) year + 1 else year
         val nextMonth = if (month == 12) 1 else month + 1
@@ -244,8 +274,6 @@ class ShiftScheduler(
         val firstOfNextMonth = LocalDate(nextYear, nextMonth, 1)
         val lastDayOfMonth = firstOfNextMonth.minus(DatePeriod(days = 1))
 
-        return (1..lastDayOfMonth.dayOfMonth).map { day ->
-            LocalDate(year, month, day)
-        }
+        return (1..lastDayOfMonth.dayOfMonth).map { day -> LocalDate(year, month, day) }
     }
 }

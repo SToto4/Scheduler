@@ -1,11 +1,15 @@
 package org.stoto.scheduler.storage
 
+import java.awt.FileDialog
+import java.awt.Frame
 import java.io.File
-import javax.swing.JFileChooser
-import javax.swing.filechooser.FileNameExtensionFilter
+import java.io.FilenameFilter
 
 /**
- * Desktop (JVM) [FileStorage]: valódi fájl I/O [File]-lal és natív Swing fájlválasztóval.
+ * Desktop (JVM) [FileStorage]: valódi fájl I/O [File]-lal és modern, natív
+ * [FileDialog]-alapú fájlválasztóval. A [FileDialog] Windows és macOS alatt is az
+ * operációs rendszerbe épített natív fájlkezelő ablakot nyitja meg (szemben a régi
+ * Swing [javax.swing.JFileChooser]-rel).
  */
 class DesktopFileStorage : FileStorage {
 
@@ -20,29 +24,37 @@ class DesktopFileStorage : FileStorage {
         File(path).readText(Charsets.UTF_8)
 
     override fun chooseSavePath(suggestedName: String): String? {
-        val chooser = JFileChooser().apply {
-            dialogTitle = "Mentés másként"
-            selectedFile = File(suggestedName)
-            applyExtensionFilter(suggestedName)
+        val dialog = FileDialog(null as Frame?, "Mentés másként", FileDialog.SAVE).apply {
+            file = suggestedName
+            filenameFilter = extensionFilter(suggestedName)
+            isVisible = true
         }
-        if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) return null
-        return chooser.selectedFile?.absolutePath
+        return selectedPath(dialog)
     }
 
     override fun chooseOpenPath(): String? {
-        val chooser = JFileChooser().apply {
-            dialogTitle = "Megnyitás"
-            fileFilter = FileNameExtensionFilter("JSON és CSV fájlok", "json", "csv")
+        val dialog = FileDialog(null as Frame?, "Megnyitás", FileDialog.LOAD).apply {
+            filenameFilter = FilenameFilter { _, name ->
+                val lower = name.lowercase()
+                lower.endsWith(".json") || lower.endsWith(".csv")
+            }
+            isVisible = true
         }
-        if (chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) return null
-        return chooser.selectedFile?.absolutePath
+        return selectedPath(dialog)
     }
 
-    private fun JFileChooser.applyExtensionFilter(suggestedName: String) {
+    /** A dialógus `directory` + `file` összefűzése teljes útvonallá (vagy `null`, ha megszakítva). */
+    private fun selectedPath(dialog: FileDialog): String? {
+        val dir = dialog.directory ?: return null
+        val name = dialog.file ?: return null
+        return File(dir, name).absolutePath
+    }
+
+    /** A javasolt fájlnév kiterjesztéséből képzett szűrő (ha van kiterjesztés). */
+    private fun extensionFilter(suggestedName: String): FilenameFilter? {
         val ext = suggestedName.substringAfterLast('.', "").lowercase()
-        if (ext.isNotEmpty()) {
-            fileFilter = FileNameExtensionFilter("$ext fájl", ext)
-        }
+        if (ext.isEmpty()) return null
+        return FilenameFilter { _, name -> name.lowercase().endsWith(".$ext") }
     }
 }
 
