@@ -2,7 +2,9 @@ package org.stoto.scheduler.model
 
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.LocalDate
+import kotlinx.serialization.Serializable
 
+@Serializable
 data class Worker(
     val id: String,
     val name: String,
@@ -11,6 +13,7 @@ data class Worker(
     val preferredDates: Set<LocalDate> = emptySet()
 )
 
+@Serializable
 data class Shift(
     val date: LocalDate,
     val assignedWorkerId: String? = null
@@ -19,6 +22,7 @@ data class Shift(
         get() = date.dayOfWeek == DayOfWeek.SATURDAY || date.dayOfWeek == DayOfWeek.SUNDAY
 }
 
+@Serializable
 data class Schedule(
     val year: Int,
     val month: Int,
