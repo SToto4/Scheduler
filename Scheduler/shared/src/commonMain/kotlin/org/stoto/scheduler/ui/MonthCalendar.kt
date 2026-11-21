@@ -1,11 +1,13 @@
 package org.stoto.scheduler.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -41,9 +43,15 @@ fun MonthCalendar(
     val cells: List<LocalDate?> = List(leading) { null } + days
     val rows = cells.chunked(7)
 
-    Column(modifier = modifier.fillMaxWidth()) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
         // Napnév-fejléc
-        Row(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
             DateUtil.shortDayNames.forEach { label ->
                 Text(
                     text = label,
@@ -56,9 +64,12 @@ fun MonthCalendar(
             }
         }
         rows.forEach { week ->
-            Row(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 36.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 week.forEach { date ->
-                    Box(Modifier.weight(1f).aspectRatio(1f).padding(2.dp)) {
+                    Box(Modifier.weight(1f).heightIn(min = 36.dp)) {
                         if (date != null) {
                             DayCell(
                                 date = date,
@@ -70,7 +81,7 @@ fun MonthCalendar(
                 }
                 // A hiányzó cellák kitöltése, hogy az utolsó sor is igazodjon.
                 repeat(7 - week.size) {
-                    Box(Modifier.weight(1f).aspectRatio(1f))
+                    Box(Modifier.weight(1f))
                 }
             }
         }
@@ -100,7 +111,7 @@ private fun DayCell(date: LocalDate, highlight: DayHighlight, onClick: () -> Uni
         contentColor = contentColor,
         shape = RoundedCornerShape(8.dp),
         modifier = Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
     ) {

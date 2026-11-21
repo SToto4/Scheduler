@@ -10,8 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -51,7 +51,12 @@ fun WorkersScreen(viewModel: SchedulerViewModel, modifier: Modifier = Modifier) 
 
     val selectedWorker = workers.firstOrNull { it.id == selectedWorkerId }
 
-    Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -76,11 +81,12 @@ fun WorkersScreen(viewModel: SchedulerViewModel, modifier: Modifier = Modifier) 
                 )
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().weightHeight(),
+            // Sima Column a görgethető szülőn belül
+            Column(
+                modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(workers, key = { it.id }) { worker ->
+                workers.forEach { worker ->
                     WorkerRow(
                         worker = worker,
                         selected = worker.id == selectedWorkerId,
@@ -106,7 +112,9 @@ fun WorkersScreen(viewModel: SchedulerViewModel, modifier: Modifier = Modifier) 
                 year = year,
                 month = month,
                 onToggleUnavailable = { viewModel.toggleUnavailableDate(selectedWorker.id, it) },
-                onTogglePreferred = { viewModel.togglePreferredDate(selectedWorker.id, it) }
+                onTogglePreferred = { viewModel.togglePreferredDate(selectedWorker.id, it) },
+                onClearUnavailable = { viewModel.clearUnavailableDates(selectedWorker.id) },
+                onClearPreferred = { viewModel.clearPreferredDates(selectedWorker.id) }
             )
         } else if (workers.isNotEmpty()) {
             Text(
@@ -129,9 +137,6 @@ fun WorkersScreen(viewModel: SchedulerViewModel, modifier: Modifier = Modifier) 
         )
     }
 }
-
-/** A LazyColumn ne tolja le a naptárat: fél magasságot adunk neki. */
-private fun Modifier.weightHeight(): Modifier = this.then(Modifier.height(240.dp))
 
 @Composable
 private fun WorkerRow(
@@ -180,7 +185,9 @@ private fun PreferenceCalendarCard(
     year: Int,
     month: Int,
     onToggleUnavailable: (kotlinx.datetime.LocalDate) -> Unit,
-    onTogglePreferred: (kotlinx.datetime.LocalDate) -> Unit
+    onTogglePreferred: (kotlinx.datetime.LocalDate) -> Unit,
+    onClearUnavailable: () -> Unit,
+    onClearPreferred: () -> Unit
 ) {
     var mode by remember { mutableStateOf(PrefMode.UNAVAILABLE) }
 
@@ -227,6 +234,33 @@ private fun PreferenceCalendarCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(Modifier.height(8.dp))
+            // A kijelölt módhoz tartozó összes nap törlése
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                val hasDates = when (mode) {
+                    PrefMode.UNAVAILABLE -> worker.unavailableDates.isNotEmpty()
+                    PrefMode.PREFERRED -> worker.preferredDates.isNotEmpty()
+                }
+                OutlinedButton(
+                    enabled = hasDates,
+                    onClick = {
+                        when (mode) {
+                            PrefMode.UNAVAILABLE -> onClearUnavailable()
+                            PrefMode.PREFERRED -> onClearPreferred()
+                        }
+                    }
+                ) {
+                    Text(
+                        when (mode) {
+                            PrefMode.UNAVAILABLE -> "Összes kieső nap törlése"
+                            PrefMode.PREFERRED -> "Összes preferált nap törlése"
+                        }
+                    )
+                }
+            }
         }
     }
 }

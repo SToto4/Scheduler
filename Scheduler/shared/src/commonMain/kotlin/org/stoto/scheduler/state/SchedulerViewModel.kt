@@ -145,6 +145,16 @@ class SchedulerViewModel(
         }
     }
 
+    /** A dolgozó összes kieső napjának törlése. */
+    fun clearUnavailableDates(workerId: String) {
+        updateDates(workerId) { it.copy(unavailableDates = emptySet()) }
+    }
+
+    /** A dolgozó összes preferált napjának törlése. */
+    fun clearPreferredDates(workerId: String) {
+        updateDates(workerId) { it.copy(preferredDates = emptySet()) }
+    }
+
     private inline fun updateDates(workerId: String, transform: (Worker) -> Worker) {
         val index = _workers.value.indexOfFirst { it.id == workerId }
         if (index < 0) return
